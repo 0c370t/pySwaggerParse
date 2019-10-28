@@ -1,40 +1,50 @@
-from pySwaggerParse.helpers import swagger_py_type_lookup, get_type
+from pySwaggerParse.helpers import swagger_py_type_lookup, get_type, parameter_as_type_gate
 
 
 def build_list_model(model):
     if model["type"] != "array":
         raise Exception("This function requires an array!")
-    return """class %s(list):
+    if get_type(model["items"]) != "":
+        contained_type = get_type(model["items"])
+    else:
+        contained_type = get_type(model) + "Items"
+        if contained_type not in models:
+            if "enum" in model["items"]:
+                models[contained_type + "Items"] = build_enum_model(model["items"], get_type(model) + "Items")
+            if "properties" in model["items"]:
+                models[contained_type + "Items"] = build_object_model(model["items"], get_type(model) + "Items")
+    if "description" in model:
+        docstring = \
+"""\"\"\"
+        %s
+    \"\"\"""" % ".\n       ".join(model["description"].split("."))
+    else:
+        docstring = ""
+    return """
+
+class %s(list):
+    %s
     def __init__(self):
         super().__init__()
         self.T = %s
 
     def __setitem__(self, key, item):
         if type(item) is self.T:
-            super().__setitem__(key, item)
-
-
-""" % (
+            super().__setitem__(key, item)""" % (
         get_type(model),
-        get_type(model["items"])
+        docstring,
+        contained_type
     )
 
 
-def build_object_model(model):
+def build_object_model(model, forced_name=""):
     if model["type"] != "object":
         raise Exception("This function requires an object to model")
     # Build Required Parameters
     required_property_param = ", ".join(model["required"])
     required_property_set = []
     for r in model["required"]:
-        required_property_set += ["""if type(%s) is not %s:
-            raise Exception("%s must be of type %s!")""" % (
-            r,
-            get_type(model["properties"][r]),
-            r,
-            get_type(model["properties"][r])
-        )]
-        required_property_set += ["self.%s = %s\n" % (r, r)]
+        required_property_set += ["self.%s = %s" % (r, r)]
 
     # Build Optional Parameters
     optional_params = []
@@ -44,37 +54,53 @@ def build_object_model(model):
     optional_property_param = ", ".join(optional_params)
     optional_property_set = []
     for o in optional_params:
-        optional_property_set += ["""if type(%s) is not %s:
-            raise Exception("%s must be of type %s!")""" % (
-            o,
-            get_type(model["properties"][o]),
-            o,
-            get_type(model["properties"][o])
-        )]
-        optional_property_set += ["self.%s = %s\n" % (o, o)]
+        optional_property_set += ["self.%s = %s" % (o, o)]
 
-    all_property_set = required_property_set + optional_property_set
-    return """class %s:
-    def __init__(self%s%s):
+    all_property_set = []
+    for param in model["properties"]:
+        all_property_set.append(parameter_as_type_gate(model["properties"][param], 3, param))
+    all_property_set += required_property_set + optional_property_set
+    model_name = forced_name if forced_name != "" else get_type(model)
+    if "description" in model:
+        docstring = \
+"""\"\"\"
         %s
+    \"\"\"""" % ".\n       ".join(model["description"].split("."))
+    else:
+        docstring = ""
+    return """
 
-""" % (
-        get_type(model),
+class %s:
+    %s
+    def __init__(self%s%s):
+        %s""" % (
+        model_name,
+        docstring,
         ", " + required_property_param if len(required_property_param) > 0 else "",
         ", " + optional_property_param if len(optional_property_param) > 0 else "",
         "\n        ".join(all_property_set) if len(all_property_set) > 0 else "pass\n",
     )
 
 
-def build_enum_model(e):
+def build_enum_model(e, force_name=""):
     enum_values = []
     for v in e["enum"]:
-        enum_values += ["%s = '%s'" % (v.lstrip("#").replace("-","_"), v)]
-    return """class %s(Enum):
-    %s
+        enum_values += ["%s = '%s'" % (v.replace("#", "_").replace("-", "_"), v)]
+    model_name = force_name if force_name != "" else get_type(e)
+    if "description" in e:
+        docstring = \
+"""\"\"\"
+        %s
+    \"\"\"""" % ".\n       ".join(e["description"].split("."))
+    else:
+        docstring = ""
+    return """
 
-    """ % (
-        get_type(e),
+class %s(Enum):
+    %s
+    %s""" % (
+        model_name,
+        docstring,
         "\n    ".join(enum_values)
     )
 
@@ -108,10 +134,20 @@ def create(swagger_definition, root_path):
             for parameter in swagger_definition["paths"][pathName]["post"]["parameters"]:
                 if "schema" in parameter:
                     recursively_identify_models(parameter["schema"])
+                elif "$ref" not in parameter:
+                    recursively_identify_models(parameter)
+        if "get" in swagger_definition["paths"][pathName]:
+            for parameter in swagger_definition["paths"][pathName]["get"]["parameters"]:
+                if "schema" in parameter:
+                    recursively_identify_models(parameter["schema"])
+                elif "$ref" not in parameter:
+                    recursively_identify_models(parameter)
+
     for parameter in swagger_definition["parameters"].values():
         recursively_identify_models(parameter)
 
     with open(root_path, "w") as f:
-        f.write("from enum import Enum\n\n")
-        for model in models.values():
-            f.write(model+"\n")
+        f.write("from enum import Enum\n")
+        for model_key in sorted(models.keys()):
+            if model_key != "":
+                f.write(models[model_key] + "\n")

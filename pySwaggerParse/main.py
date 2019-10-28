@@ -29,4 +29,4 @@ def main(input_path, output_path):
     methods.create(namespaces, Path(root_path, "methods"), swagger)
 
 
-main("ESI.json", "../esi/api")
+main("ESI.json", "esi/api")
